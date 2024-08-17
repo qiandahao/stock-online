@@ -229,7 +229,7 @@ func main() {
 			fmt.Println("文件已存在")
 			continue
 		}
-		dailyDataUrl := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-1&indicator=kline,pe,pb,ps,pcf,market_capital,agt,ggt,balance"
+		dailyDataUrl := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-4&indicator=kline,pe,pb,ps,pcf,market_capital,agt,ggt,balance"
 		req, _ := http.NewRequest("GET", dailyDataUrl, nil)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Cookie", cookie)

@@ -8,7 +8,19 @@ from datetime import datetime
 import os
 
 def generate_stock_csv():
-    with open('/app/data_volume/json/list.json', 'r') as file:
+    today = datetime.now().strftime('%Y-%m-%d')  # 格式化为 'YYYY-MM-DD'
+    
+    # 构建文件夹路径
+    folder_path = f'/app/json/{today}'
+    
+    # 确保目录存在
+    if not os.path.exists(folder_path):
+        return
+    
+    # 构建文件路径
+    file_path = os.path.join(folder_path, 'list.json')
+    print(file_path)
+    with open(file_path, 'r') as file:
         data = json.load(file)
     symbols = [item['symbol'] for item in data['data']['list']]
 
@@ -17,10 +29,12 @@ def generate_stock_csv():
 
     
     for index, row in df.iterrows():
-        if not os.path.exists('/app/data_volume/json/'+ row['symbol'] + '.json'):
+        file_path = os.path.join(folder_path,  row['symbol'] + '.json')
+        if not os.path.exists(file_path):
+            print(file_path)
             continue
         print(index)
-        json_data = pd.read_json('/app/data_volume/json/'+ row['symbol'] + '.json')
+        json_data = pd.read_json(file_path)
         
         df = pd.DataFrame(json_data['data']['item'], columns=json_data['data']['column'])
         

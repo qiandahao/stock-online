@@ -97,7 +97,7 @@ func main() {
 
 	// 打印结果
 	fmt.Println("Formatted Date:", formattedDate)
-	folder_path := "D:\\data_volume\\json\\" + formattedDate
+	folder_path := "/build/json/" + formattedDate + "/"
 	if _, err := os.Stat(folder_path); os.IsNotExist(err) {
 		err := os.Mkdir(folder_path, 0755) // 0755 是文件夹的权限，类似于 rwxr-xr-x
 		if err != nil {
@@ -201,14 +201,14 @@ func main() {
 		return
 	}
 
-	listFilePath := folder_path + "\\list.json"
+	listFilePath := folder_path + "/list.json"
 
 	// 检查文件夹是否已存在
 	if _, err := os.Stat(listFilePath); !os.IsNotExist(err) {
 		// 文件夹不存在，创建它
 		fmt.Println("list文件已存在")
 	} else {
-		err = ioutil.WriteFile(folder_path+"\\list.json", mergedFile, 0644)
+		err = ioutil.WriteFile(folder_path+"/list.json", mergedFile, 0644)
 		if err != nil {
 			fmt.Println("写入合并文件失败:", err)
 			return
@@ -221,7 +221,7 @@ func main() {
 	unixMilli := unixNano / int64(time.Millisecond)
 	for _, symbol := range symbols {
 
-		filePath := folder_path + "\\" + symbol + ".json"
+		filePath := folder_path + "/" + symbol + ".json"
 
 		// 检查文件夹是否已存在
 		if _, err := os.Stat(filePath); !os.IsNotExist(err) {

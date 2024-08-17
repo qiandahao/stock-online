@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"gopkg.in/gomail.v2"
 )
 
 type Market struct {
@@ -325,17 +323,17 @@ func main() {
 	if err != nil {
 		fmt.Println("删除文件出错")
 	}
+	result := make([]string, 0)
+	resMap := make(map[string]int, 0)
+	res := make([]Quote, 0)
+	resQuote := make(map[string]int, 0)
 	for {
 		file, err := os.OpenFile("running.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			fmt.Println("Error opening file:", err)
 			return
 		}
-		logfile, err := os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			fmt.Println("Error opening file:", err)
-			return
-		}
+
 		rows, err := conn.Query(context.Background(), sqlStatements)
 		if err != nil {
 			log.Fatalf("Failed to execute query: %v", err)
@@ -364,22 +362,26 @@ func main() {
 		// 等待定时器触发
 		// <-timer.C
 		fmt.Println("开始运行\n")
-		result := make([]string, 0)
+
 		for rows.Next() {
 			index++
 			var (
 				symbol string
+				open   float64
+				close  float64
 				// ... 定义其他列的类型
 			)
 
-			err := rows.Scan(&symbol /* ... */)
-			fmt.Println(symbol)
+			err := rows.Scan(&symbol, &open, &close /* ... */)
+			if _, ok := resMap[symbol]; ok {
+				continue
+			}
 			if err != nil {
 				log.Fatalf("Failed to scan row: %v", err)
 			}
-			logStr := ""
+
 			// url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + symbol
-			url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-60&indicator=kline"
+			url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-1&indicator=kline"
 			fmt.Println(url)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("Content-Type", "application/json")
@@ -431,99 +433,41 @@ func main() {
 			// 	}
 			// }
 
-			max := 0.0
-			if len(data) <= 5 {
-				continue
-			}
-
-			prevClose := 0.0
-			prevPopIndex := 0
-			prevPopGap := 0.0
-			for i := 0; i < 5; i++ {
-				if data[i][3].(float64) > max {
-					max = data[i][3].(float64)
+			if data[0][2].(float64) < open && data[0][5].(float64) > open {
+				result = append(result, symbol)
+				resMap[symbol] = 1
+				str := fmt.Sprintf("%s,%f,%f,%f\n", symbol, open, data[0][5].(float64), data[0][1].(float64)/1000)
+				_, err = file.WriteString(str)
+				if err != nil {
+					fmt.Println("Error writing to file:", err)
+					return
 				}
+				//if start < end {
+				//	slope := linearRegression(x[start:end+1], y[start:end+1])
+				//	slope2 := linearRegression(x[end+1:], y[end+1:])
+				//	fmt.Println("http://xueqiu.com/s/" + symbol)
+
+				//	fmt.Printf("%.5f, %.5f\n", slope, slope2)
+				//}
+
+				// 处理每一行的数据
+				//if response.Data.Quote.Current > max_high_60_days_ago {
+				//}
 			}
 
-			for i := 5; i < len(data); i++ {
-				// if  {
-				// 	str += fmt.Sprintf("%f %f   ", data[i][2].(float64), max) + symbol + "\n"
-				// }
-
-				// "timestamp","volume","open","high","low","close","chg","percent","turnoverrate","amount","volume_post","amount_post"
-				if i > len(data)-7 {
-					if data[i][2].(float64) > max {
-						close := data[i][5].(float64)
-						percentOpen := (data[i][2].(float64) - float64(prevClose)) / prevClose
-						percentClose := (close - float64(prevClose)) / prevClose
-
-						ums := int64(data[i][0].(float64))
-
-						// 由于Unix时间戳通常是以秒为单位，我们需要将毫秒转为秒
-						seconds := ums / 1000
-
-						// 使用time.Unix函数将秒转换为时间
-						t := time.Unix(seconds, 0)
-
-						// 使用time.Format格式化时间为人类可读的格式
-						date := t.Format("2006-01-02 15:04:05")
-
-						logStr += fmt.Sprintf("%s,%f,%f,%s\n", symbol, percentOpen, percentClose, date)
-						result = append(result, symbol)
-						prevPopIndex = i
-						prevPopGap = data[i][2].(float64)
-					} else if prevPopIndex != 0 && i-prevPopIndex < 10 {
-						if prevClose < prevPopGap && data[i][5].(float64) > prevPopGap {
-							ums := int64(data[i][0].(float64))
-
-							// 由于Unix时间戳通常是以秒为单位，我们需要将毫秒转为秒
-							seconds := ums / 1000
-
-							// 使用time.Unix函数将秒转换为时间
-							t := time.Unix(seconds, 0)
-
-							// 使用time.Format格式化时间为人类可读的格式
-							date := t.Format("2006-01-02 15:04:05")
-							logStr += fmt.Sprintf("touch %s\n", date)
-						}
-					}
-				}
-				// 更新当前位置的前k个对象的最大值和最小值
-				if data[i][3].(float64) > max {
-					max = data[i][3].(float64)
-				} else if data[i-5][3].(float64) == max {
-					// 如果当前最大值要被移除，则重新计算最大值
-					max = 0.0
-					for j := i - 4; j <= i; j++ {
-						if data[j][3].(float64) > max {
-							max = data[j][3].(float64)
-						}
-					}
-				}
-
-				prevClose = data[i][5].(float64)
-			}
-
-			_, err = logfile.WriteString(logStr)
-			if err != nil {
-				fmt.Println("Error writing to file:", err)
-				return
-			}
-			//if start < end {
-			//	slope := linearRegression(x[start:end+1], y[start:end+1])
-			//	slope2 := linearRegression(x[end+1:], y[end+1:])
-			//	fmt.Println("http://xueqiu.com/s/" + symbol)
-
-			//	fmt.Printf("%.5f, %.5f\n", slope, slope2)
-			//}
-
-			// 处理每一行的数据
-			//if response.Data.Quote.Current > max_high_60_days_ago {
-			//}
+			//fmt.Printf("Column 1: %s, Column 2: %d\n", symbol, max_high_60_days_ago /* ... */)
+			//fmt.Printf("Quote Information:\n")
+			//fmt.Printf("Symbol: %s\n", response.Data.Quote.Symbol)
+			//fmt.Printf("Current: %.2f\n", response.Data.Quote.Current)
 		}
 		str := ""
-		res := make([]Quote, 0)
+
 		for _, item := range result {
+			if _, ok := resQuote[item]; ok {
+				continue
+			} else {
+				resQuote[item] = 1
+			}
 			url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + item
 			// url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-60&indicator=kline"
 			// fmt.Println(url)
@@ -581,52 +525,5 @@ func main() {
 		}
 		fmt.Println(index)
 		time.Sleep(1 * time.Minute)
-		file.Close()
-		err = os.Remove("running.txt")
-		if err != nil {
-			fmt.Println("删除文件出错")
-		}
-		//fmt.Printf("Column 1: %s, Column 2: %d\n", symbol, max_high_60_days_ago /* ... */)
-		//fmt.Printf("Quote Information:\n")
-		//fmt.Printf("Symbol: %s\n", response.Data.Quote.Symbol)
-		//fmt.Printf("Current: %.2f\n", response.Data.Quote.Current)
 	}
-}
-
-func SendEmail(symbol, context string) {
-	m := gomail.NewMessage()
-	m.SetAddressHeader("From", "magineq6@126.com", "人造人六号买买买")
-	m.SetAddressHeader("To", "magineq@126.com", "人造人一号")
-	// 等待连接建立
-	time.Sleep(2 * time.Second)
-
-	// 创建合约对象
-	m.SetHeader("Subject", symbol+" 进入通道")
-	m.SetBody("text/plain", context)
-
-	d := gomail.NewDialer("smtp.126.com", 25, "magineq6@126.com", "EGEPQFJNPDSTODIV")
-
-	if err := d.DialAndSend(m); err != nil {
-		log.Println("send mail err:", err)
-	}
-}
-
-func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	destinationFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destinationFile.Close()
-
-	_, err = io.Copy(destinationFile, sourceFile)
-	if err != nil {
-		return err
-	}
-	return nil
 }
