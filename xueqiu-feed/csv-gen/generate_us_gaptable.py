@@ -19,8 +19,8 @@ def calculate_rolling_high(idx, series, window=5):
 def fetch_historical_data(symbol, client):
     query = f"""
     Select timestamp AS date, open, high, low, close, volume
-    FROM cn_stock_daily
-    WHERE symbol = '{symbol}' ORDER BY date desc LIMIT 20
+    FROM us_stock_daily
+    WHERE symbol = '{symbol}' ORDER BY date desc LIMIT 180
     """
     df = client.query_df(query)
     df.set_index('date', inplace=True)
@@ -39,7 +39,7 @@ def fetch_historical_data(symbol, client):
     # 将这些记录插入到 ClickHouse 数据库中
     # 假设 `special_records` 是要插入的目标表
     insert_query_template = """
-        INSERT INTO cn_gap_records (timestamp, open, high, low, close, volume, symbol) VALUES
+        INSERT INTO us_gap_records (timestamp, open, high, low, close, volume, symbol) VALUES
     """
 
     # 生成插入语句的值部分
@@ -57,7 +57,9 @@ def fetch_historical_data(symbol, client):
 def main():
     print("gg")
     client = clickhouse_connect.get_client(host='localhost', port=18123, database='default')
-    query = "SELECT distinct symbol FROM cn_stock_daily where timestamp =  (select max(timestamp) from cn_stock_daily)"
+    query = "truncate table us_gap_records"
+    result = client.query(query)
+    query = "SELECT distinct symbol FROM us_stock_daily where timestamp =  (select max(timestamp) from us_stock_daily)"
     result = client.query(query)
 
     # 遍历查询结果并处理每个 symbol

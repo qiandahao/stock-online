@@ -10,12 +10,12 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"gopkg.in/gomail.v2"
 )
 
 type Market struct {
@@ -139,12 +139,10 @@ type KLine struct {
 }
 
 type Point struct {
-	index   int
-	close   float64
-	low     float64
-	high    float64
-	trigger int
-	ts      int64
+	open  float64
+	close float64
+	high  float64
+	ts    uint64
 }
 
 type DownPeriod struct {
@@ -265,13 +263,327 @@ func updateCookies(url string, jar *cookiejar.Jar) error {
 	return nil
 }
 
-func main() {
+func SendEmail(symbol, context string) {
+	m := gomail.NewMessage()
+	m.SetAddressHeader("From", "magineq6@126.com", "人造人六号")
+	m.SetAddressHeader("To", "magineq@126.com", "人造人一号")
+	// 等待连接建立
+	time.Sleep(2 * time.Second)
+
+	// 创建合约对象
+	m.SetHeader("Subject", symbol+" 进入买点")
+	m.SetBody("text/plain", context)
+
+	d := gomail.NewDialer("smtp.126.com", 25, "magineq6@126.com", "EGEPQFJNPDSTODIV")
+
+	if err := d.DialAndSend(m); err != nil {
+		log.Println("send mail err:", err)
+	}
+}
+
+func runCNTask(result map[string]int, pool map[string]*Point, cookie string) {
 	now := time.Now()
 	unixNano := now.UnixNano()
 	// 将纳秒转换为毫秒
 	unixMilli := unixNano / int64(time.Millisecond)
+
+	// 配置ClickHouse连接参数
+	options := &clickhouse.Options{
+		Addr: []string{"localhost:19000"},
+	}
+
+	conn, err := clickhouse.Open(options)
+	if err != nil {
+		log.Fatalf("Failed to connect to ClickHouse: %v", err)
+	}
+	defer conn.Close()
+	if len(pool) == 0 {
+		// 将文件内容转换为字符串
+		sqlStatements := fmt.Sprintf(`WITH RankedSymbols AS (
+			SELECT *,
+				ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn
+			FROM cn_gap_records
+			WHERE symbol in (SELECT DISTINCT symbol FROM cn_stock_daily where timestamp = (select max(timestamp) from cn_stock_daily) and market_capital > 5045411866) and timestamp >= toUnixTimestamp(now()) * 1000 - 12* 24 * 3600 * 1000
+			and  timestamp <= toUnixTimestamp(now()) * 1000 - 5* 24 * 3600 * 1000
+		)
+		SELECT symbol, open, close, timestamp
+		FROM RankedSymbols
+
+		WHERE rn = 1;`,
+		)
+		rows, err := conn.Query(context.Background(), sqlStatements)
+		if err != nil {
+			fmt.Println("数据库查询出错")
+		}
+		for rows.Next() {
+			var (
+				symbol string
+				open   float64
+				close  float64
+				ts     uint64
+			)
+			temp := &Point{}
+			err := rows.Scan(&symbol, &open, &close, &ts /* ... */)
+			if err != nil {
+				fmt.Println("数据绑定出错")
+			}
+			temp.open = open
+			temp.close = close
+			temp.ts = ts
+			pool[symbol] = temp
+		}
+	}
+
+	err = os.Remove("running-cn.txt")
+	if err != nil {
+		fmt.Println("删除文件出错")
+	}
+	file, err := os.OpenFile("running-cn.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return
+	}
+	start := time.Now()
+	for symbol, item := range pool {
+		// 等待定时器触发
+		// <-timer.C
+		// url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + symbol
+		url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-20&indicator=kline"
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36")
+		//fmt.Println(url)
+		client := http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println("发送请求失败:", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 读取响应体
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		// 定义一个变量来存储解析后的数据
+		var response Response15m
+
+		// 解析JSON数据
+		err = json.Unmarshal(body, &response)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		data := response.Data.Item
+		if len(data) == 0 {
+			log.Fatal("No data available")
+		}
+
+		closePrice := make([]float64, 0)
+		for i := 0; i < len(data); i++ {
+			closePrice = append(closePrice, data[i][5].(float64))
+
+			if i == len(data)-1 {
+				avg := calculateMA(closePrice, 10)
+				if data[i][2].(float64) < avg[len(avg)-1] && data[i][5].(float64) > item.open {
+					seconds := item.ts / 1000
+					nanoseconds := (item.ts % 1000) * 1000000
+					t := time.Unix(int64(seconds), int64(nanoseconds))
+					formattedTime := t.Format("2006-01-02 15:04:05")
+
+					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][5].(float64))
+					if _, ok := result[symbol]; !ok {
+						result[symbol] = 1
+						SendEmail(symbol, str)
+					}
+					_, err = file.WriteString(str)
+					if err != nil {
+						fmt.Println("Error writing to file:", err)
+						return
+					}
+				}
+			}
+		}
+	}
+	elapsed := time.Since(start) // 计算经过的时间
+	fmt.Printf("耗时：%s\n", elapsed)
+	loopLine := "======================================\n"
+	_, err = file.WriteString(loopLine)
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+		return
+	}
+}
+
+func runUsTask(result map[string]int, pool map[string]*Point, cookie string) {
+	now := time.Now()
+	unixNano := now.UnixNano()
+	// 将纳秒转换为毫秒
+	unixMilli := unixNano / int64(time.Millisecond)
+
+	// 配置ClickHouse连接参数
+	options := &clickhouse.Options{
+		Addr: []string{"localhost:19000"},
+	}
+
+	conn, err := clickhouse.Open(options)
+	if err != nil {
+		log.Fatalf("Failed to connect to ClickHouse: %v", err)
+	}
+	defer conn.Close()
+	if len(pool) == 0 {
+		// 将文件内容转换为字符串
+		sqlStatements := fmt.Sprintf(`WITH RankedSymbols AS (
+			SELECT *,
+				ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn
+			FROM us_gap_records
+			WHERE symbol in (SELECT DISTINCT symbol FROM us_stock_daily where timestamp = (select max(timestamp) from us_stock_daily) and market_capital > 5045411866) and timestamp >= toUnixTimestamp(now()) * 1000 - 12* 24 * 3600 * 1000
+			and  timestamp <= toUnixTimestamp(now()) * 1000 - 5* 24 * 3600 * 1000
+		)
+		SELECT symbol, open, close, timestamp
+		FROM RankedSymbols
+
+		WHERE rn = 1;`,
+		)
+		rows, err := conn.Query(context.Background(), sqlStatements)
+		if err != nil {
+			fmt.Println("数据库查询出错")
+		}
+		for rows.Next() {
+			var (
+				symbol string
+				open   float64
+				close  float64
+				ts     uint64
+			)
+			temp := &Point{}
+			err := rows.Scan(&symbol, &open, &close, &ts /* ... */)
+			if err != nil {
+				fmt.Println("数据绑定出错")
+			}
+			temp.open = open
+			temp.close = close
+			temp.ts = ts
+			pool[symbol] = temp
+		}
+	}
+
+	err = os.Remove("running-us.txt")
+	if err != nil {
+		fmt.Println("删除文件出错")
+	}
+	file, err := os.OpenFile("running-us.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return
+	}
+	start := time.Now()
+	for symbol, item := range pool {
+		// 等待定时器触发
+		// <-timer.C
+
+		// url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + symbol
+		url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-20&indicator=kline"
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36")
+		//fmt.Println(url)
+		client := http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println("发送请求失败:", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 读取响应体
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		// 定义一个变量来存储解析后的数据
+		var response Response15m
+
+		// 解析JSON数据
+		err = json.Unmarshal(body, &response)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		data := response.Data.Item
+		if len(data) == 0 {
+			log.Fatal("No data available")
+		}
+
+		closePrice := make([]float64, 0)
+		for i := 0; i < len(data); i++ {
+			closePrice = append(closePrice, data[i][5].(float64))
+
+			if i == len(data)-1 {
+				avg := calculateMA(closePrice, 10)
+				if data[i][2].(float64) < avg[len(avg)-1] && data[i][5].(float64) > item.open {
+					seconds := item.ts / 1000
+					nanoseconds := (item.ts % 1000) * 1000000
+					t := time.Unix(int64(seconds), int64(nanoseconds))
+					formattedTime := t.Format("2006-01-02 15:04:05")
+
+					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][5].(float64))
+					if _, ok := result[symbol]; !ok {
+						result[symbol] = 1
+						SendEmail(symbol, str)
+					}
+					_, err = file.WriteString(str)
+					if err != nil {
+						fmt.Println("Error writing to file:", err)
+						return
+					}
+				}
+			}
+		}
+	}
+	elapsed := time.Since(start) // 计算经过的时间
+	fmt.Printf("耗时：%s\n", elapsed)
+	loopLine := "======================================\n"
+	_, err = file.WriteString(loopLine)
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+		return
+	}
+}
+func main() {
+	result := make(map[string]int, 0)
+	pool := make(map[string]*Point, 0)
+	// 定义时间段
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		fmt.Println("Error loading location:", err)
+		return
+	}
+
+	// Define time periods (Beijing time)
+	morningCnStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 9, 30, 0, 0, loc)
+	morningCnEnd := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 11, 30, 0, 0, loc)
+	afternoonCnStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 13, 0, 0, 0, loc)
+	afternoonCnEnd := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 15, 0, 0, 0, loc)
+
+	clearCn := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 21, 15, 0, 0, loc)
+	startUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 21, 30, 0, 0, loc)
+	endUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 4, 00, 0, 0, loc)
+	clearUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 9, 15, 0, 0, loc)
+	// 创建一个 ticker，用于定时检查
+	ticker := time.NewTicker(15 * time.Second) // 每分钟检查一次
+	defer ticker.Stop()
+
 	urlStr := "http://www.xueqiu.com"
-	fmt.Println(urlStr)
 	// 创建CookieJar来存储Cookies
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -298,226 +610,23 @@ func main() {
 	if len(cookiesString) > 2 {
 		cookiesString = cookiesString[:len(cookiesString)-2] // 去掉最后的 "; "
 	}
-	// 配置ClickHouse连接参数
-	options := &clickhouse.Options{
-		Addr: []string{"localhost:19000"},
-	}
-	cookie := "cookiesu=421719180263062; device_id=a6515f3041fb0ab4a40de82f413d8a7b; s=c118yzh5gw; xq_is_login=1; bid=aa3d1df992f90ca8cdd6773895b2f006_lz8suhg2; xq_a_token=dd19a74be93d09e875bd102a365bec04201fd3d2; xqat=dd19a74be93d09e875bd102a365bec04201fd3d2; xq_id_token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ1aWQiOjU4MzY3MjgwNjAsImlzcyI6InVjIiwiZXhwIjoxNzI1ODQzMTYxLCJjdG0iOjE3MjMyNTExNjE1NzUsImNpZCI6ImQ5ZDBuNEFadXAifQ.YcAhvX12IuEaVB2QaSQ7nNdHkcBwTChfgy7ecmKoU2dkH6V5pDiaUXHWRDbX0s_dPJGnRrbYHm8Nh6Kwjte49KxOOWNd69J_rWIvJJcqve_Z_9RyOrr88oijJkoEsO9gFWR-HWZ3oZ7dgLDvsgflvsiVP_arnFdga_Vc5QBgXinxc6kjN6Gkr0VGN0ylQhcSrSQAOpIIBrPOoQ7rtWGUb-KRONntikpCkYjGzkm8czctdBTlniWYLtwvAodUR4_lG1khuwu4fFyjsKy6KfFtAaoEsHTo7ZOiWHR26NYxbC_6JTmp8XXsGgSW3ZhgqzZB5nOSK28deF16_79p4ye4GQ; xq_r_token=3d8b6ce104df5bfdc560803bb1aeead591d0647d; u=5836728060; Hm_lvt_1db88642e346389874251b5a1eded6e3=1721834124,1723444989,1723650182,1723803179; Hm_lpvt_1db88642e346389874251b5a1eded6e3=1723803179; HMACCOUNT=0CBDE8C10CD55194; is_overseas=1; ssxmod_itna=Qqjx0Q0=i=D=DtEK0dGQDHQySeeTf8BxOAxY5wiNND/SFIDnqD=GFDK40EE8YqLWdQj7xdhqljADL5e87Cr4Fbz0RGadTDCPGnDB9DtazQxiigDCeDIDWeDiDGbtDFxYoDeaXQDFCT5XzUhKDpxGrDlKDRx07qSKDbxDaDGpk=70YUx0WDWPDi29w2ODDBO0EEmi3Dm+ky2a+qUYDn=011nhkD75Dux0HdBLxUxDCVKjxZ1v6BU3dA1BhDCKDjg71z6BP2ZHzp6fPNaxPVQ9ePc2D1lGoHFDPaii4oWR5102DIWxUEVGVLlwtQxqBEseixD=; ssxmod_itna2=Qqjx0Q0=i=D=DtEK0dGQDHQySeeTf8BxOAxY5wiNG9F=DBkP7Q7GcDeuiD=="
-	// 创建ClickHouse连接
-	conn, err := clickhouse.Open(options)
-	if err != nil {
-		log.Fatalf("Failed to connect to ClickHouse: %v", err)
-	}
-	defer conn.Close()
 
-	// 读取SQL脚本文件内容
-	sqlFile, err := ioutil.ReadFile("./script.sql")
-	// sqlFile, err := ioutil.ReadFile("./script_30_days_gap_exists.sql")
-	if err != nil {
-		log.Fatalf("Failed to read SQL script file: %v", err)
-	}
-
-	// 将文件内容转换为字符串
-	sqlStatements := string(sqlFile)
-	err = os.Remove("running.txt")
-	if err != nil {
-		fmt.Println("删除文件出错")
-	}
 	for {
-		file, err := os.OpenFile("running.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			fmt.Println("Error opening file:", err)
-			return
-		}
+		select {
+		case t := <-ticker.C:
+			// 当前时间
+			now := t
+			// 检查是否在定义的时间段内
+			if (now.After(morningCnStart) && now.Before(morningCnEnd)) || (now.After(afternoonCnStart) && now.Before(afternoonCnEnd)) {
+				runCNTask(result, pool, cookiesString)
+			} else if now.After(clearCn) && now.Before(startUs) || (now.After(clearUs) && now.Before(morningCnStart)) {
+				result = make(map[string]int, 0)
+				pool = make(map[string]*Point, 0)
 
-		rows, err := conn.Query(context.Background(), sqlStatements)
-		if err != nil {
-			log.Fatalf("Failed to execute query: %v", err)
-		}
-		defer rows.Close()
-		// 遍历查询结果
-		index := 0
-		start := time.Now() // 记录开始时间
-
-		nextRun := time.Date(start.Year(), start.Month(), start.Day(), 9, 30, 5, 0, start.Location())
-
-		// 如果当前时间已经过了今天9点30分，则将下次运行时间设定为明天的9点30分
-		if start.After(nextRun) {
-			nextRun = nextRun.Add(24 * time.Hour)
-		}
-
-		// 计算下次运行时间与当前时间的间隔
-		duration := nextRun.Sub(start)
-
-		// 创建定时器，在间隔时间后执行任务
-		timer := time.NewTimer(duration)
-		defer timer.Stop()
-
-		fmt.Printf("下次运行时间：%s\n", nextRun)
-
-		// 等待定时器触发
-		// <-timer.C
-		fmt.Println("开始运行\n")
-		result := make([]string, 0)
-		for rows.Next() {
-			index++
-			var (
-				symbol string
-				open   float64
-				close  float64
-				// ... 定义其他列的类型
-			)
-
-			err := rows.Scan(&symbol, &open, &close /* ... */)
-			fmt.Println(symbol)
-			if err != nil {
-				log.Fatalf("Failed to scan row: %v", err)
+			} else if now.After(startUs) && now.Before(endUs) {
+				runUsTask(result, pool, cookiesString)
+			} else {
 			}
-
-			// url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + symbol
-			url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-3&indicator=kline"
-			fmt.Println(url)
-			req, _ := http.NewRequest("GET", url, nil)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Cookie", cookie)
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36")
-			//fmt.Println(url)
-			client := http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				fmt.Println("发送请求失败:", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			// 读取响应体
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-
-			// 定义一个变量来存储解析后的数据
-			var response Response15m
-
-			// 解析JSON数据
-			err = json.Unmarshal(body, &response)
-			if err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-
-			data := response.Data.Item
-			if len(data) == 0 {
-				log.Fatal("No data available")
-			}
-
-			// for idx, item := range data {
-			// 	// timestamp := item[0].(float64)
-			// 	high := item[5].(float64)
-			// 	low := item[4].(float64)
-
-			// 	if high > highest {
-			// 		highest = high
-			// 		start = idx
-			// 	}
-			// 	if low < lowest {
-			// 		lowest = low
-			// 		end = idx
-			// 	}
-			// }
-			for i := 0; i < len(data); i++ {
-				if data[i][2].(float64) < open && data[i][5].(float64) > open {
-					result = append(result, symbol)
-					str := fmt.Sprintf("%s,%f,%f\n", symbol, open, data[i][5].(float64))
-					_, err = file.WriteString(str)
-					if err != nil {
-						fmt.Println("Error writing to file:", err)
-						return
-					}
-					//if start < end {
-					//	slope := linearRegression(x[start:end+1], y[start:end+1])
-					//	slope2 := linearRegression(x[end+1:], y[end+1:])
-					//	fmt.Println("http://xueqiu.com/s/" + symbol)
-
-					//	fmt.Printf("%.5f, %.5f\n", slope, slope2)
-					//}
-
-					// 处理每一行的数据
-					//if response.Data.Quote.Current > max_high_60_days_ago {
-					//}
-				}
-			}
-
-			//fmt.Printf("Column 1: %s, Column 2: %d\n", symbol, max_high_60_days_ago /* ... */)
-			//fmt.Printf("Quote Information:\n")
-			//fmt.Printf("Symbol: %s\n", response.Data.Quote.Symbol)
-			//fmt.Printf("Current: %.2f\n", response.Data.Quote.Current)
-		}
-		str := ""
-		res := make([]Quote, 0)
-		for _, item := range result {
-			url := "https://stock.xueqiu.com/v5/stock/quote.json?extend=detail&symbol=" + item
-			// url := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-60&indicator=kline"
-			// fmt.Println(url)
-			req, _ := http.NewRequest("GET", url, nil)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Cookie", cookie)
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
-
-			//fmt.Println(url)
-			client := http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				fmt.Println("发送请求失败:", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			// 读取响应体
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-
-			// 定义一个变量来存储解析后的数据
-			var response Response
-
-			// 解析JSON数据
-			err = json.Unmarshal(body, &response)
-			if err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-
-			res = append(res, response.Data.Quote)
-		}
-		sort.Slice(res, func(i, j int) bool {
-			return res[i].MarketCapital > res[j].MarketCapital
-		})
-		for _, item := range res {
-			str += item.Symbol + "   " + item.Name + "  " + fmt.Sprintf("%f", item.MarketCapital) + "\n"
-		}
-		_, err = file.WriteString(str)
-		if err != nil {
-			fmt.Println("Error writing to file:", err)
-			return
-		}
-		elapsed := time.Since(start) // 计算经过的时间
-		fmt.Printf("耗时：%s\n", elapsed)
-		loopLine := "======================================\n"
-		_, err = file.WriteString(loopLine)
-		if err != nil {
-			fmt.Println("Error writing to file:", err)
-			return
-		}
-		fmt.Println(index)
-		time.Sleep(1 * time.Minute)
-		file.Close()
-		err = os.Remove("running.txt")
-		if err != nil {
-			fmt.Println("删除文件出错")
 		}
 	}
 }
