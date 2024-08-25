@@ -261,7 +261,7 @@ func updateCookies(url string, jar *cookiejar.Jar) error {
 
 func main() {
 	now := time.Now()
-	country := "us"
+	country := "cn"
 	talbeName := country + "_stock_daily"
 	talbeGap := country + "_gap_records"
 	// tableName := "cn_stock_daily"
@@ -287,7 +287,7 @@ func main() {
 		fmt.Println("删除文件出错")
 	}
 
-	symbolsQuery := `SELECT DISTINCT symbol FROM ` + talbeName + ` where timestamp = (select max(timestamp) from ` + talbeName + `) and market_capital > 5045411866`
+	symbolsQuery := `SELECT DISTINCT symbol FROM ` + talbeName + ` where timestamp = (select max(timestamp) from ` + talbeName + `) and market_capital > 10045411866`
 	rows, err := conn.Query(context.Background(), symbolsQuery)
 	if err != nil {
 		log.Fatalf("Failed to execute query: %v", err)
@@ -318,7 +318,7 @@ func main() {
 		points := 0.0
 		for _, symbol := range symbols {
 			frontTime := now.AddDate(0, 0, index-5).Unix() * 1000 // 5天前的时间戳（毫秒）
-			backTime := now.AddDate(0, 0, index-10).Unix() * 1000 // 10天前的时间戳（毫秒）
+			backTime := now.AddDate(0, 0, index-12).Unix() * 1000 // 10天前的时间戳（毫秒）
 
 			// 使用 fmt.Sprintf 构建 SQL 查询
 			sqlStatements := fmt.Sprintf(`
@@ -348,7 +348,7 @@ func main() {
 			}
 			defer rows.Close()
 			var str string
-			var op, cl, hi float64
+			var op, cl, hi, lo float64
 			var tss uint64
 			buy := 0.0
 			for rows.Next() {
@@ -389,7 +389,7 @@ func main() {
 						AND timestamp <= %d
 						AND symbol = '%s'
 					)
-					SELECT symbol, open, close, high, timestamp
+					SELECT symbol, open, close, high,low, timestamp
 					FROM RankedSymbols
 					WHERE rn = 1;`,
 					talbeGap,
@@ -405,7 +405,7 @@ func main() {
 				defer gap.Close()
 
 				for gap.Next() {
-					err := gap.Scan(&symbol, &op, &cl, &hi, &tss)
+					err := gap.Scan(&symbol, &op, &cl, &hi, &lo, &tss)
 					if err != nil {
 						fmt.Println("gg")
 						return
@@ -420,7 +420,7 @@ func main() {
 					nanoseconds = (tss % 1000) * 1000000
 					tt := time.Unix(int64(seconds), int64(nanoseconds))
 					ftt := tt.Format("2006-01-02 15:04:05")
-					if open < avg && op < high {
+					if low < avg && op > avg && op < high {
 						if open > op {
 							buy = open
 						} else {

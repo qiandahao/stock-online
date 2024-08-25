@@ -88,7 +88,7 @@ func main() {
 	cookie := "cookiesu=421719180263062; device_id=a6515f3041fb0ab4a40de82f413d8a7b; s=c118yzh5gw; HMACCOUNT=98EC87727C47C805; xq_is_login=1; u=5836728060; snbim_minify=true; bid=aa3d1df992f90ca8cdd6773895b2f006_lz8suhg2; xq_a_token=dd19a74be93d09e875bd102a365bec04201fd3d2; xqat=dd19a74be93d09e875bd102a365bec04201fd3d2; xq_id_token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ1aWQiOjU4MzY3MjgwNjAsImlzcyI6InVjIiwiZXhwIjoxNzI1ODQzMTYxLCJjdG0iOjE3MjMyNTExNjE1NzUsImNpZCI6ImQ5ZDBuNEFadXAifQ.YcAhvX12IuEaVB2QaSQ7nNdHkcBwTChfgy7ecmKoU2dkH6V5pDiaUXHWRDbX0s_dPJGnRrbYHm8Nh6Kwjte49KxOOWNd69J_rWIvJJcqve_Z_9RyOrr88oijJkoEsO9gFWR-HWZ3oZ7dgLDvsgflvsiVP_arnFdga_Vc5QBgXinxc6kjN6Gkr0VGN0ylQhcSrSQAOpIIBrPOoQ7rtWGUb-KRONntikpCkYjGzkm8czctdBTlniWYLtwvAodUR4_lG1khuwu4fFyjsKy6KfFtAaoEsHTo7ZOiWHR26NYxbC_6JTmp8XXsGgSW3ZhgqzZB5nOSK28deF16_79p4ye4GQ; xq_r_token=3d8b6ce104df5bfdc560803bb1aeead591d0647d; is_overseas=1; Hm_lvt_1db88642e346389874251b5a1eded6e3=1721180874,1721265714,1721834124; Hm_lpvt_1db88642e346389874251b5a1eded6e3=1723423218; ssxmod_itna=eqGxgQDtoCqiwkDl4Yq0P+p35Q37K5i33AmoWD/KDfr4AQDymD82ohA+G+pGp=aXNC7ZxG=Eb7nrfbWb2BqwWeARr4GLDmFjNkAmi4GGDBeGwD0eG+DD4DWYq03DoxGAg+x04kg92u9jHD0YDzqDgD7jH7qDEDG3D0+=5YD59D73Df4DAWw2yYDDlYGn1775Dbh6SnR0HieDS/AUxKG=DjqGgDBdF9pD9DDtzZpGZfk98r=PuYmiDtqD9FCU7in+ySMt2i64I3r+CDT4GKBqPQGRwCi4CCBwe/0Lo72Cba7vLRO449QvZPD=; ssxmod_itna2=eqGxgQDtoCqiwkDl4Yq0P+p35Q37K5i33AmExG9boDBdP7QHGcDewiD="
 
 	now := time.Now()
-	unixNano := now.UnixNano()
+	//unixNano := now.UnixNano()
 
 	dateFormat := "2006-01-02"
 
@@ -97,7 +97,9 @@ func main() {
 
 	// 打印结果
 	fmt.Println("Formatted Date:", formattedDate)
-	folder_path := "/build/json/" + formattedDate + "/"
+
+	folder_path := "d:/data_volume/json/" + formattedDate + "/"
+	//folder_path := "/build/json/" + formattedDate + "/"
 	if _, err := os.Stat(folder_path); os.IsNotExist(err) {
 		err := os.Mkdir(folder_path, 0755) // 0755 是文件夹的权限，类似于 rwxr-xr-x
 		if err != nil {
@@ -218,7 +220,7 @@ func main() {
 	// 定义一个变量来存储解析后的数据
 
 	// 将纳秒转换为毫秒
-	unixMilli := unixNano / int64(time.Millisecond)
+	// unixMilli := unixNano / int64(time.Millisecond)
 	for _, symbol := range symbols {
 
 		filePath := folder_path + "/" + symbol + ".json"
@@ -230,7 +232,7 @@ func main() {
 			continue
 		}
 
-		dailyDataUrl := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=" + strconv.FormatInt(unixMilli, 10) + "&period=day&type=before&count=-1&indicator=kline,pe,pb,ps,pcf,market_capital,agt,ggt,balance"
+		dailyDataUrl := "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=" + symbol + "&begin=1723655014000&period=day&type=before&count=-2000&indicator=kline,pe,pb,ps,pcf,market_capital,agt,ggt,balance"
 		req, _ := http.NewRequest("GET", dailyDataUrl, nil)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Cookie", cookie)

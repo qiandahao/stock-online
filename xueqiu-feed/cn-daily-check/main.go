@@ -303,7 +303,7 @@ func runCNTask(result map[string]int, pool map[string]*Point, cookie string) {
 			SELECT *,
 				ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn
 			FROM cn_gap_records
-			WHERE symbol in (SELECT DISTINCT symbol FROM cn_stock_daily where timestamp = (select max(timestamp) from cn_stock_daily) and market_capital > 5045411866) and timestamp >= toUnixTimestamp(now()) * 1000 - 12* 24 * 3600 * 1000
+			WHERE symbol in (SELECT DISTINCT symbol FROM cn_stock_daily where timestamp = (select max(timestamp) from cn_stock_daily)) and timestamp >= toUnixTimestamp(now()) * 1000 - 12* 24 * 3600 * 1000
 			and  timestamp <= toUnixTimestamp(now()) * 1000 - 5* 24 * 3600 * 1000
 		)
 		SELECT symbol, open, close, timestamp
@@ -344,6 +344,7 @@ func runCNTask(result map[string]int, pool map[string]*Point, cookie string) {
 		return
 	}
 	start := time.Now()
+	fmt.Println(len(pool))
 	for symbol, item := range pool {
 		// 等待定时器触发
 		// <-timer.C
@@ -390,16 +391,19 @@ func runCNTask(result map[string]int, pool map[string]*Point, cookie string) {
 
 			if i == len(data)-1 {
 				avg := calculateMA(closePrice, 10)
-				if data[i][2].(float64) < avg[len(avg)-1] && data[i][5].(float64) > item.open {
+				if data[i-1][5].(float64) < avg[len(avg)-2] {
+					continue
+				}
+				if data[i][4].(float64) < item.open && data[i][5].(float64) > item.open {
 					seconds := item.ts / 1000
 					nanoseconds := (item.ts % 1000) * 1000000
 					t := time.Unix(int64(seconds), int64(nanoseconds))
 					formattedTime := t.Format("2006-01-02 15:04:05")
 
-					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][5].(float64))
+					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 最低：%f, 最高：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][4].(float64), data[i][3].(float64), data[i][5].(float64))
 					if _, ok := result[symbol]; !ok {
 						result[symbol] = 1
-						SendEmail(symbol, str)
+						// SendEmail(symbol, str)
 					}
 					_, err = file.WriteString(str)
 					if err != nil {
@@ -472,7 +476,7 @@ func runUsTask(result map[string]int, pool map[string]*Point, cookie string) {
 			pool[symbol] = temp
 		}
 	}
-
+	fmt.Println(len(pool))
 	err = os.Remove("running-us.txt")
 	if err != nil {
 		fmt.Println("删除文件出错")
@@ -530,16 +534,19 @@ func runUsTask(result map[string]int, pool map[string]*Point, cookie string) {
 
 			if i == len(data)-1 {
 				avg := calculateMA(closePrice, 10)
-				if data[i][2].(float64) < avg[len(avg)-1] && data[i][5].(float64) > item.open {
+				if data[i-1][5].(float64) < avg[len(avg)-2] {
+					continue
+				}
+				if data[i][4].(float64) < item.open && data[i][5].(float64) > item.open {
 					seconds := item.ts / 1000
 					nanoseconds := (item.ts % 1000) * 1000000
 					t := time.Unix(int64(seconds), int64(nanoseconds))
 					formattedTime := t.Format("2006-01-02 15:04:05")
 
-					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][5].(float64))
+					str := fmt.Sprintf("%s\n        Gap点:%f(%s），10日平均：%f,开盘：%f, 最低：%f, 最高：%f, 现价：%f\n", symbol, item.open, formattedTime, avg[len(avg)-1], data[i][2].(float64), data[i][4].(float64), data[i][3].(float64), data[i][5].(float64))
 					if _, ok := result[symbol]; !ok {
 						result[symbol] = 1
-						SendEmail(symbol, str)
+						//SendEmail(symbol, str)
 					}
 					_, err = file.WriteString(str)
 					if err != nil {
@@ -577,10 +584,10 @@ func main() {
 
 	clearCn := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 21, 15, 0, 0, loc)
 	startUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 21, 30, 0, 0, loc)
-	endUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 4, 00, 0, 0, loc)
-	clearUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 9, 15, 0, 0, loc)
+	endUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day()+1, 4, 00, 0, 0, loc)
+	clearUs := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day()+1, 9, 15, 0, 0, loc)
 	// 创建一个 ticker，用于定时检查
-	ticker := time.NewTicker(15 * time.Second) // 每分钟检查一次
+	ticker := time.NewTicker(2 * time.Second) // 每分钟检查一次
 	defer ticker.Stop()
 
 	urlStr := "http://www.xueqiu.com"
@@ -626,6 +633,7 @@ func main() {
 			} else if now.After(startUs) && now.Before(endUs) {
 				runUsTask(result, pool, cookiesString)
 			} else {
+
 			}
 		}
 	}

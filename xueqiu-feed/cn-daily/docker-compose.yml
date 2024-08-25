@@ -1,0 +1,45 @@
+services:
+  cn-daily:
+    image: cn-daily:v1
+    container_name: cn-daily
+    working_dir: /build
+    volumes:
+      - D:\\data_volume\\json\\cn\\daily:/build/json
+    command: 
+      - /bin/sh
+      - -c
+      - |
+        rm /build/json/stage*
+        go run main.go
+        touch /build/json/stage1
+        # 检查 /build/json/stage2 是否存在，存在则退出
+        while [ ! -f /build/json/stage2 ]; do
+          sleep 1
+        done
+        echo "stage2 文件存在，容器将退出"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /build/json/stage1"]
+      interval: 30s
+      retries: 3
+      start_period: 10s
+      timeout: 10s
+  csv-gen:
+    image: csv-gen:latest
+    container_name: csv-gen
+    working_dir: /app
+    volumes:
+      - D:\\data_volume\\json\\cn\\daily:/app/json
+      - csv:/app/csv
+    command:
+      - /bin/sh
+      - -c
+      - |
+        rm -f /app/csv/csv/*.csv
+        python generate_csv.py
+        touch /app/json/stage2
+    depends_on:
+      cn-daily:
+        condition: service_healthy
+volumes:
+  csv:
+    external: true

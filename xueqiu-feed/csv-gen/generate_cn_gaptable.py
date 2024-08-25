@@ -57,6 +57,8 @@ def fetch_historical_data(symbol, client):
 def main():
     print("gg")
     client = clickhouse_connect.get_client(host='localhost', port=18123, database='default')
+    query = "truncate table cn_gap_records"
+    result = client.query(query)
     query = "SELECT distinct symbol FROM cn_stock_daily where timestamp =  (select max(timestamp) from cn_stock_daily)"
     result = client.query(query)
 
